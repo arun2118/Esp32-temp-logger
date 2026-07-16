@@ -1,6 +1,6 @@
 # 📊 RuuviTag Offline Field Multi-Logger & Dashboard
 
-A robust, production-ready **ESP32-C3** data logging firmware that captures telemetry from up to three **RuuviTag BLE Sensors** simultaneously. Designed specifically for off-the-grid field applications, this system operates entirely **without internet access or cellular data**, serving an interactive dark-themed dashboard over a local Wi-Fi Access Point (AP).
+A robust, production-ready data logging firmware that captures telemetry from up to three **RuuviTag BLE Sensors** simultaneously. Designed specifically for off-the-grid field applications, this system operates entirely **without internet access or cellular data**, serving an interactive dark-themed dashboard over a local Wi-Fi Access Point (AP).
 
 ---
 
@@ -25,7 +25,7 @@ A robust, production-ready **ESP32-C3** data logging firmware that captures tele
                                           │
                                           ▼ (Sniffs Raw BLE Advertisements)
                                ┌─────────────────────┐
-                               │  ESP32-C3 dev board │
+                               │  ESP32 dev board │
                                └─────────────────────┘
                                           │
                                           ▼ (Generates Independent Local Network)
@@ -38,7 +38,7 @@ A robust, production-ready **ESP32-C3** data logging firmware that captures tele
 ```
 
 ### Hardware Requirements
-* **Microcontroller:** Any standard 4MB ESP32-C3 development board (e.g., ESP32-C3 Super Mini or DevKitM-1).
+* **Microcontroller:** Any standard ESP32 development board (e.g., ESP32-C3 Super Mini or DevKitM-1).
 * **Sensors:** 1 to 3 RuuviTag environmental monitors running default Data Format 5 firmware.
 * **Power Source:** A common 5V USB power bank or utility battery brick.
 
@@ -84,7 +84,7 @@ Paste your code into your local **`src/main.cpp`** layout configuration workspac
 
 ## 📲 How To Use in the Field
 
-1. **Connect:** Power your ESP32-C3 unit via a USB battery bank out in the field.
+1. **Connect:** Power your ESP32 unit via a USB battery bank out in the field.
 2. **Join Network:** Open your mobile device's Wi-Fi panel and connect to the local access network:
    * **SSID:** `Ruuvi_Multi_Logger`
    * **Password:** `password123`

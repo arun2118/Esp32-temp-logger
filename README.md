@@ -8,7 +8,7 @@ A robust, production-ready data logging firmware that captures telemetry from **
 
 * **True Network Independence:** 100% operational off-grid. Dashboard layout, graphics, and timeline tables require absolutely zero internet connectivity or third-party script downloads.
 * **Non-Blocking Dual-Core Architecture:** Runs on a dedicated **FreeRTOS Background Worker Task** thread. This separates the BLE radio sniffer from the Wi-Fi stack, completely eliminating network dropouts or freezes during sensor scans.
-* **Smart Power-Loss Recovery:** Automatically saves all sensor labels, targeted MAC configurations, and tracking historical entries straight into the ESP32-C3's internal **Non-Volatile Flash Memory (Preferences)**. If power cuts out, data is instantly restored at boot.
+* **Smart Power-Loss Recovery:** Automatically saves all sensor labels, targeted MAC configurations, and tracking historical entries straight into the ESP32's internal **Non-Volatile Flash Memory (Preferences)**. If power cuts out, data is instantly restored at boot.
 * **Endless Queue Storage Loop (FIFO):** Data continuously stacks beyond the 10-hour mark. Once the internal memory allocation threshold is reached, it auto-purges the oldest historical row to inject fresh tracking points indefinitely.
 * **Dynamic Offline CSS Trend Graphing:** Features an offline-native visual chart engine using pure CSS grids that dynamically scale and map Fahrenheit temperature trends on your phone's screen.
 * **Fahrenheit Native Engine:** Direct binary-level conversion of Ruuvi raw hex payloads into Fahrenheit values out of the box.

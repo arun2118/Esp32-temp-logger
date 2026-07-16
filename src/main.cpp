@@ -379,39 +379,56 @@ void readDataLogFromFlash() {
     prefs.end();
 }
 
+// --- Background Core Task Worker (FreeRTOS Engine) ---
 void bleWorkerTask(void *pvParameters) {
     unsigned long localLastLogTime = millis();
     unsigned long localLastLiveTime = millis();
+    
     pBLEScan->start(2, false); pBLEScan->clearResults();
 
     while(1) {
         if (userTriggeredScan) { pBLEScan->start(4, false); pBLEScan->clearResults(); userTriggeredScan = false; }
         if (millis() - localLastLiveTime >= 30000) { pBLEScan->start(2, false); pBLEScan->clearResults(); localLastLiveTime = millis(); }
 
+        // 5-Minute Logging Checkpoint
         if (millis() - localLastLogTime >= 300000) {
             pBLEScan->start(2, false); pBLEScan->clearResults();
 
             if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
-                for (int i = 0; i < dataCount; i++) { dataLog[i].timestamp += 5; }
-                
-                if (dataCount < MAX_POINTS) {
-                    dataLog[dataCount].timestamp = 0;
-                    for(int s=0; s<NUM_SENSORS; s++) { 
-                        dataLog[dataCount].temps[s] = currentTemp[s]; 
-                        dataLog[dataCount].humis[s] = currentHumi[s]; 
-                        dataLog[dataCount].dews[s] = currentDewPoint[s];
-                    }
-                    dataCount++;
-                } else {
-                    for (int i = 1; i < MAX_POINTS; i++) { dataLog[i - 1] = dataLog[i]; }
-                    dataLog[MAX_POINTS - 1].timestamp = 0;
-                    for(int s=0; s<NUM_SENSORS; s++) { 
-                        dataLog[MAX_POINTS - 1].temps[s] = currentTemp[s]; 
-                        dataLog[MAX_POINTS - 1].humis[s] = currentHumi[s]; 
-                        dataLog[MAX_POINTS - 1].dews[s] = currentDewPoint[s];
+                // FIXED: Verify at least one targeted sensor has a live signal before logging a snapshot row
+                bool validDataPresent = false;
+                for(int s=0; s<NUM_SENSORS; s++) {
+                    if (targetMACs[s].length() > 0 && sensorSeen[s]) {
+                        validDataPresent = true;
                     }
                 }
-                commitDataLogToFlash();
+
+                if (validDataPresent) {
+                    for (int i = 0; i < dataCount; i++) { dataLog[i].timestamp += 5; }
+                    
+                    if (dataCount < MAX_POINTS) {
+                        dataLog[dataCount].timestamp = 0;
+                        for(int s=0; s<NUM_SENSORS; s++) { 
+                            dataLog[dataCount].temps[s] = currentTemp[s]; 
+                            dataLog[dataCount].humis[s] = currentHumi[s]; 
+                            dataLog[dataCount].dews[s] = currentDewPoint[s];
+                        }
+                        dataCount++;
+                    } else {
+                        for (int i = 1; i < MAX_POINTS; i++) { dataLog[i - 1] = dataLog[i]; }
+                        dataLog[MAX_POINTS - 1].timestamp = 0;
+                        for(int s=0; s<NUM_SENSORS; s++) { 
+                            dataLog[MAX_POINTS - 1].temps[s] = currentTemp[s]; 
+                            dataLog[MAX_POINTS - 1].humis[s] = currentHumi[s]; 
+                            dataLog[MAX_POINTS - 1].dews[s] = currentDewPoint[s];
+                        }
+                    }
+                    commitDataLogToFlash();
+                }
+
+                // Reset the confirmation trackers for the next logging interval window
+                for(int s=0; s<NUM_SENSORS; s++) sensorSeen[s] = false;
+                
                 xSemaphoreGive(dataMutex);
             }
             localLastLogTime = millis();
@@ -419,6 +436,7 @@ void bleWorkerTask(void *pvParameters) {
         vTaskDelay(pdMS_TO_TICKS(100)); 
     }
 }
+
 
 void setup() {
     Serial.begin(115200);

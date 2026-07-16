@@ -3,6 +3,7 @@
 #include <WebServer.h>
 #include <Update.h>
 #include <NimBLEDevice.h>
+#include <Preferences.h>
 
 // --- AP Credentials ---
 const char* apSSID = "Ruuvi_Multi_Logger";
@@ -10,6 +11,7 @@ const char* apPassword = "password123";
 
 WebServer server(80);
 NimBLEScan* pBLEScan;
+Preferences prefs; 
 
 // --- Multi-Sensor Configuration ---
 const int NUM_SENSORS = 3;
@@ -17,12 +19,12 @@ String targetMACs[NUM_SENSORS] = {"", "", ""};
 String sensorLabels[NUM_SENSORS] = {"Sensor Slot 1", "Sensor Slot 2", "Sensor Slot 3"};
 
 // --- Live Telemetry Buffers ---
-float currentTemp[NUM_SENSORS] = {0.0, 0.0, 0.0};
+float currentTemp[NUM_SENSORS] = {0.0, 0.0, 0.0}; 
 float currentHumi[NUM_SENSORS] = {0.0, 0.0, 0.0};
 bool sensorSeen[NUM_SENSORS] = {false, false, false};
 String discoveredTags = ""; 
 
-// --- Data Logging Cache (10 Hours max) ---
+// --- Endless Queue Storage Array Layout ---
 const int MAX_POINTS = 130; 
 struct LogData {
     unsigned long timestamp; 
@@ -32,9 +34,14 @@ struct LogData {
 LogData dataLog[MAX_POINTS];
 int dataCount = 0;
 
-// Mutex lock to safely handle multi-threaded memory access
 SemaphoreHandle_t dataMutex;
 bool userTriggeredScan = false;
+
+// Forward Declarations for Flash Memory Handlers
+void saveConfigurationToFlash();
+void loadConfigurationFromFlash();
+void commitDataLogToFlash();
+void readDataLogFromFlash();
 
 // --- BLE Engine Callback ---
 class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
@@ -46,7 +53,8 @@ class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
                 int dataFormat = (uint8_t)data[2];
                 if (dataFormat == 5) { 
                     int16_t rawTemp = ((int8_t)data[3] << 8) | (uint8_t)data[4];
-                    float parsedTemp = rawTemp * 0.005;
+                    float celsius = rawTemp * 0.005;
+                    float parsedTempF = (celsius * 1.8) + 32.0;
 
                     uint16_t rawHumi = ((uint8_t)data[5] << 8) | (uint8_t)data[6];
                     float parsedHumi = rawHumi * 0.0025;
@@ -56,7 +64,7 @@ class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
                     if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
                         for (int i = 0; i < NUM_SENSORS; i++) {
                             if (targetMACs[i].length() > 0 && targetMACs[i] == deviceMac) {
-                                currentTemp[i] = parsedTemp;
+                                currentTemp[i] = parsedTempF;
                                 currentHumi[i] = parsedHumi;
                                 sensorSeen[i] = true;
                             }
@@ -87,8 +95,14 @@ const char htmlDashboardHeader[] PROGMEM = "<!DOCTYPE html><html><head>"
 "table{width:100%; border-collapse:collapse; margin-top:10px; font-size:12px; text-align:left;}"
 "th{background:#00adb5; color:#fff; padding:8px;}"
 "td{padding:8px; border-bottom:1px solid #333; font-family:monospace;}"
-"tr:nth-child(even){background:#252525;}</style></head><body>"
-"<h2>📊 RuuviTag Multi-Sensor Dashboard</h2>"
+"tr:nth-child(even){background:#252525;}"
+".chart-panel{display:flex; height:200px; align-items:flex-end; gap:6px; background:#0a0a0a; border-left:2px solid #555; border-bottom:2px solid #555; padding:15px 10px 5px 10px; margin-top:15px; overflow-x:auto; position:relative;}"
+".chart-column{display:flex; flex-direction:column; align-items:center; flex-grow:1; min-width:40px; height:100%; justify-content:flex-end;}"
+".chart-pillar{width:100%; background:linear-gradient(to top, #00adb5, #ff4757); border-radius:2px 2px 0 0; position:relative; min-height:4px;}"
+".chart-lbl-t{position:absolute; top:-18px; left:50%; transform:translateX(-50%); font-size:9px; font-weight:bold; color:#ff4757; font-family:monospace; white-space:nowrap;}"
+".chart-lbl-h{font-size:9px; color:#00adb5; font-family:monospace; margin-top:2px; font-weight:bold;}"
+".chart-tick{font-size:9px; color:#888; font-family:monospace; margin-top:4px; white-space:nowrap;}</style></head><body>"
+"<h2>📊 RuuviTag Offline Field Dashboard</h2>"
 "<div class='box'><h3>📡 Live Monitored Sensors</h3><div class='grid' id='sensor-grid'>Reading hardware pins...</div></div>"
 "<div class='box'><h3>🔍 Local Device Discovery Tool</h3>"
 "<p style='font-size:12px; color:#aaa; margin:0 0 10px 0;'>Click any green MAC address block to copy it, then paste it into the Config Mapping profiles below.</p>"
@@ -130,12 +144,12 @@ const char htmlDashboardFooter[] PROGMEM = "<div class='box'><h3>🗄️ Memory 
 "    let displayMac = data.sensors[i].mac;"
 "    gridHtml += `<div class='sensor-box'><div class='sensor-title'>📌 ${data.sensors[i].label}</div>`+"
 "                `<div class='lbl'>MAC:</div><div class='val' style='font-size:11px; color:#888;'>${displayMac}</div>`+"
-"                `<div class='lbl'>Temperature:</div><div class='val' style='color:#ff4757;'>${data.sensors[i].t.toFixed(1)}°C</div>`+"
+"                `<div class='lbl'>Temperature:</div><div class='val' style='color:#ff4757;'>${data.sensors[i].t.toFixed(1)}°F</div>`+"
 "                `<div class='lbl'>Humidity:</div><div class='val' style='color:#00adb5;'>${data.sensors[i].h.toFixed(1)}%</div></div>`;"
 "  }"
 "  document.getElementById('sensor-grid').innerHTML = gridHtml;"
 "  firstLoad = false;"
-" }).catch(err => console.log('Awaiting server window...'));"
+" }).catch(err => console.log('Awaiting server sync window...'));"
 "}"
 "function triggerManualScan() {"
 "  let btn = document.getElementById('scan-btn'); btn.disabled = true; btn.innerText = 'Sniffing BLE frequencies...';"
@@ -145,19 +159,38 @@ const char htmlDashboardFooter[] PROGMEM = "<div class='box'><h3>🗄️ Memory 
 "    pollTelemetry();"
 "  });"
 "}"
-"setInterval(pollTelemetry, 2000);"
+"setInterval(pollTelemetry, 2500);"
 "setTimeout(pollTelemetry, 200);"
-"function clearLocalMemory(){ if(confirm('Wipe data arrays?')){ fetch('/clear',{method:'POST'}).then(() => { window.location.reload(); }); } }"
+"function clearLocalMemory(){ if(confirm('Wipe flash memory data logs?')){ fetch('/clear',{method:'POST'}).then(() => { window.location.reload(); }); } }"
 "function uploadFile(){ var fi=document.getElementById('file-input'); if(fi.files.length===0){alert('Select .bin!');return;} var fd=new FormData(); fd.append('update',fi.files); var xhr=new XMLHttpRequest(); xhr.open('POST','/update',true); document.getElementById('prg-wrapper').style.display='block'; document.getElementById('status-msg').innerText='Uploading firmware...';"
 "xhr.upload.addEventListener('progress',function(e){ if(e.lengthComputable){ var p=Math.round((e.loaded/e.total)*100); document.getElementById('prg-bar').style.width=p+'%'; document.getElementById('prg-bar').innerText=p+'%'; } });"
 "xhr.onload=function(){ if(xhr.status===200){ document.getElementById('status-msg').style.color='#00ff00'; document.getElementById('status-msg').innerText='✅ Success! Rebooting...'; setTimeout(function(){ window.location.reload(); }, 5000); }else{ document.getElementById('status-msg').innerText='❌ Failed: '+xhr.responseText; } }; xhr.send(fd); }</script></body></html>";
 // --- Endpoint Handlers ---
 void handleRoot() {
-    String htmlLogTable = "<div class='box'><h3>📈 10-Hour Rolling Timeline Log</h3>";
-    htmlLogTable += "<table><tr><th>Time Elapse</th>";
-    for(int s=0; s<NUM_SENSORS; s++) {
-        htmlLogTable += "<th>" + sensorLabels[s] + "</th>";
+    String htmlVisualChart = "<div class='box'><h3>📊 Historical Trend Profile (Slot 1 Tracker)</h3><div class='chart-panel'>";
+    if(dataCount == 0) {
+        htmlVisualChart += "<div style='position:absolute; width:100%; top:45%; text-align:center; color:#555;'>No data logs stored in flash yet...</div>";
+    } else {
+        if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
+            for (int i = 0; i < dataCount; i++) {
+                float tVal = dataLog[i].temps[0];
+                float hVal = dataLog[i].humis[0];
+                float heightPct = ((tVal - 14.0) / 90.0) * 100.0;
+                if (heightPct > 100.0) heightPct = 100.0;
+                if (heightPct < 5.0) heightPct = 5.0;
+
+                htmlVisualChart += "<div class='chart-column'><div class='chart-pillar' style='height:" + String(heightPct, 0) + "%;'>";
+                htmlVisualChart += "<div class='chart-lbl-t'>" + String(tVal, 0) + "°</div></div>";
+                htmlVisualChart += "<div class='chart-lbl-h'>" + String(hVal, 0) + "%</div>";
+                htmlVisualChart += "<div class='chart-tick'>" + String(dataLog[i].timestamp) + "m</div></div>";
+            }
+            xSemaphoreGive(dataMutex);
+        }
     }
+    htmlVisualChart += "</div></div>";
+
+    String htmlLogTable = "<div class='box'><h3>📈 10-Hour Rolling Flash Timeline Log</h3><table><tr><th>Time Elapse</th>";
+    for(int s=0; s<NUM_SENSORS; s++) { htmlLogTable += "<th>" + sensorLabels[s] + "</th>"; }
     htmlLogTable += "</tr>";
 
     if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
@@ -167,7 +200,7 @@ void handleRoot() {
             for (int i = dataCount - 1; i >= 0; i--) {
                 htmlLogTable += "<tr><td>" + String(dataLog[i].timestamp) + " mins ago</td>";
                 for(int s=0; s<NUM_SENSORS; s++) {
-                    htmlLogTable += "<td>" + String(dataLog[i].temps[s], 1) + "°C / " + String(dataLog[i].humis[s], 0) + "%</td>";
+                    htmlLogTable += "<td>" + String(dataLog[i].temps[s], 1) + "°F / " + String(dataLog[i].humis[s], 0) + "%</td>";
                 }
                 htmlLogTable += "</tr>";
             }
@@ -176,18 +209,12 @@ void handleRoot() {
     }
     htmlLogTable += "</table></div>";
 
-    String pageResponse = String(htmlDashboardHeader) + htmlLogTable + String(htmlDashboardFooter);
+    String pageResponse = String(htmlDashboardHeader) + htmlVisualChart + htmlLogTable + String(htmlDashboardFooter);
     server.send(200, "text/html; charset=utf-8", pageResponse);
 }
 
 void handleScanNow() {
-    if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
-        discoveredTags = "";
-        userTriggeredScan = true;
-        xSemaphoreGive(dataMutex);
-    }
-    
-    // Give background worker thread 4 seconds to execute the scanner pass
+    if (xSemaphoreTake(dataMutex, portMAX_DELAY)) { discoveredTags = ""; userTriggeredScan = true; xSemaphoreGive(dataMutex); }
     delay(4200); 
     server.send(200, "text/html; charset=utf-8", discoveredTags);
 }
@@ -197,20 +224,19 @@ void handleSaveConfig() {
         for (int i = 0; i < NUM_SENSORS; i++) {
             if (server.hasArg("m" + String(i))) {
                 String cleanMac = server.arg("m" + String(i));
-                cleanMac.trim(); cleanMac.toLowerCase();
-                targetMACs[i] = cleanMac;
+                cleanMac.trim(); cleanMac.toLowerCase(); targetMACs[i] = cleanMac;
             }
             if (server.hasArg("l" + String(i))) {
                 String cleanLabel = server.arg("l" + String(i));
-                cleanLabel.trim();
-                if (cleanLabel.length() > 0) sensorLabels[i] = cleanLabel;
+                cleanLabel.trim(); if (cleanLabel.length() > 0) sensorLabels[i] = cleanLabel;
             }
         }
-        dataCount = 0; // Wipe history cache on profile mapping edits
+        dataCount = 0; 
+        saveConfigurationToFlash();
+        commitDataLogToFlash(); 
         xSemaphoreGive(dataMutex);
     }
-    server.sendHeader("Location", "/");
-    server.send(302, "text/plain", "Saved");
+    server.sendHeader("Location", "/"); server.send(302, "text/plain", "Saved");
 }
 
 void handleTelemetryJson() {
@@ -225,16 +251,14 @@ void handleTelemetryJson() {
         }
         xSemaphoreGive(dataMutex);
     }
-    json += "]}";
-    server.send(200, "application/json", json);
+    json += "]}"; server.send(200, "application/json", json);
 }
 
 void handleClear() {
     if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
         dataCount = 0;
-        for(int i=0; i<NUM_SENSORS; i++) {
-            currentTemp[i] = 0.0; currentHumi[i] = 0.0; sensorSeen[i] = false;
-        }
+        for(int i=0; i<NUM_SENSORS; i++) { currentTemp[i] = 0.0; currentHumi[i] = 0.0; sensorSeen[i] = false; }
+        commitDataLogToFlash(); 
         xSemaphoreGive(dataMutex);
     }
     server.send(200, "text/plain", "OK");
@@ -249,13 +273,58 @@ void handleUpdateResponse() {
 
 void handleUpdateUpload() {
     HTTPUpload& upload = server.upload();
-    if (upload.status == UPLOAD_FILE_START) {
-        if (!Update.begin(UPDATE_SIZE_UNKNOWN)) Update.printError(Serial);
-    } else if (upload.status == UPLOAD_FILE_WRITE) {
-        if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) Update.printError(Serial);
-    } else if (upload.status == UPLOAD_FILE_END) {
-        if (!Update.end(true)) Update.printError(Serial);
+    if (upload.status == UPLOAD_FILE_START) { if (!Update.begin(UPDATE_SIZE_UNKNOWN)) Update.printError(Serial); }
+    else if (upload.status == UPLOAD_FILE_WRITE) { if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) Update.printError(Serial); }
+    else if (upload.status == UPLOAD_FILE_END) { if (!Update.end(true)) Update.printError(Serial); }
+}
+
+// --- Flash Storage Read/Write Sub-routines ---
+void saveConfigurationToFlash() {
+    prefs.begin("ruuvi_cfg", false);
+    for(int i=0; i<NUM_SENSORS; i++) {
+        prefs.putString(("m" + String(i)).c_str(), targetMACs[i]);
+        prefs.putString(("l" + String(i)).c_str(), sensorLabels[i]);
     }
+    prefs.end();
+}
+
+void loadConfigurationFromFlash() {
+    prefs.begin("ruuvi_cfg", true);
+    for(int i=0; i<NUM_SENSORS; i++) {
+        targetMACs[i] = prefs.getString(("m" + String(i)).c_str(), "");
+        sensorLabels[i] = prefs.getString(("l" + String(i)).c_str(), "Sensor Slot " + String(i+1));
+    }
+    prefs.end();
+}
+
+void commitDataLogToFlash() {
+    // FIXED: Split structure elements to avoid partition registry overhead crashes
+    prefs.begin("ruuvi_log", false);
+    prefs.putInt("count", dataCount);
+    for(int i = 0; i < dataCount; i++) {
+        String keyBase = "pt" + String(i);
+        prefs.putULong((keyBase + "_ts").c_str(), dataLog[i].timestamp);
+        for(int s = 0; s < NUM_SENSORS; s++) {
+            prefs.putFloat((keyBase + "_t" + String(s)).c_str(), dataLog[i].temps[s]);
+            prefs.putFloat((keyBase + "_h" + String(s)).c_str(), dataLog[i].humis[s]);
+        }
+    }
+    prefs.end();
+}
+
+void readDataLogFromFlash() {
+    prefs.begin("ruuvi_log", true);
+    dataCount = prefs.getInt("count", 0);
+    if(dataCount > MAX_POINTS) dataCount = MAX_POINTS;
+    for(int i = 0; i < dataCount; i++) {
+        String keyBase = "pt" + String(i);
+        dataLog[i].timestamp = prefs.getULong((keyBase + "_ts").c_str(), 0);
+        for(int s = 0; s < NUM_SENSORS; s++) {
+            dataLog[i].temps[s] = prefs.getFloat((keyBase + "_t" + String(s)).c_str(), 0.0);
+            dataLog[i].humis[s] = prefs.getFloat((keyBase + "_h" + String(s)).c_str(), 0.0);
+        }
+    }
+    prefs.end();
 }
 
 // --- Background Core Task Worker (FreeRTOS Engine) ---
@@ -263,55 +332,35 @@ void bleWorkerTask(void *pvParameters) {
     unsigned long localLastLogTime = millis();
     unsigned long localLastLiveTime = millis();
     
-    // Seed initial run markers
-    pBLEScan->start(2, false);
-    pBLEScan->clearResults();
+    pBLEScan->start(2, false); pBLEScan->clearResults();
 
     while(1) {
-        // Condition A: User clicked manual discovery tracking sweep
-        if (userTriggeredScan) {
-            pBLEScan->start(4, false);
-            pBLEScan->clearResults();
-            userTriggeredScan = false;
-        }
+        if (userTriggeredScan) { pBLEScan->start(4, false); pBLEScan->clearResults(); userTriggeredScan = false; }
+        if (millis() - localLastLiveTime >= 30000) { pBLEScan->start(2, false); pBLEScan->clearResults(); localLastLiveTime = millis(); }
 
-        // Condition B: Periodic current numbers refresh (every 30 seconds)
-        if (millis() - localLastLiveTime >= 30000) {
-            pBLEScan->start(2, false);
-            pBLEScan->clearResults();
-            localLastLiveTime = millis();
-        }
-
-        // Condition C: Log data snapshot into structural matrix (every 5 minutes)
+        // 5-Minute Logging Checkpoint
         if (millis() - localLastLogTime >= 300000) {
-            pBLEScan->start(2, false);
-            pBLEScan->clearResults();
+            pBLEScan->start(2, false); pBLEScan->clearResults();
 
             if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
-                for (int i = 0; i < dataCount; i++) {
-                    dataLog[i].timestamp += 5;
-                }
+                for (int i = 0; i < dataCount; i++) { dataLog[i].timestamp += 5; }
+                
                 if (dataCount < MAX_POINTS) {
                     dataLog[dataCount].timestamp = 0;
-                    for(int s=0; s<NUM_SENSORS; s++) {
-                        dataLog[dataCount].temps[s] = currentTemp[s];
-                        dataLog[dataCount].humis[s] = currentHumi[s];
-                    }
+                    for(int s=0; s<NUM_SENSORS; s++) { dataLog[dataCount].temps[s] = currentTemp[s]; dataLog[dataCount].humis[s] = currentHumi[s]; }
                     dataCount++;
                 } else {
-                    for (int i = 1; i < MAX_POINTS; i++) dataLog[i - 1] = dataLog[i];
+                    for (int i = 1; i < MAX_POINTS; i++) { dataLog[i - 1] = dataLog[i]; }
                     dataLog[MAX_POINTS - 1].timestamp = 0;
-                    for(int s=0; s<NUM_SENSORS; s++) {
-                        dataLog[MAX_POINTS - 1].temps[s] = currentTemp[s];
-                        dataLog[MAX_POINTS - 1].humis[s] = currentHumi[s];
-                    }
+                    for(int s=0; s<NUM_SENSORS; s++) { dataLog[MAX_POINTS - 1].temps[s] = currentTemp[s]; dataLog[MAX_POINTS - 1].humis[s] = currentHumi[s]; }
                 }
+                
+                commitDataLogToFlash();
                 xSemaphoreGive(dataMutex);
             }
             localLastLogTime = millis();
         }
-        
-        vTaskDelay(pdMS_TO_TICKS(100)); // Sleep background loop slightly to clear watchdogs
+        vTaskDelay(pdMS_TO_TICKS(100)); 
     }
 }
 
@@ -320,10 +369,11 @@ void setup() {
     delay(1000);
     
     dataMutex = xSemaphoreCreateMutex();
+    
+    loadConfigurationFromFlash();
+    readDataLogFromFlash();
 
-    WiFi.mode(WIFI_AP);
-    WiFi.softAP(apSSID, apPassword);
-    WiFi.setTxPower(WIFI_POWER_8_5dBm); 
+    WiFi.mode(WIFI_AP); WiFi.softAP(apSSID, apPassword); WiFi.setTxPower(WIFI_POWER_8_5dBm); 
 
     server.on("/", HTTP_GET, handleRoot);
     server.on("/scan-now", HTTP_POST, handleScanNow);
@@ -336,15 +386,12 @@ void setup() {
     NimBLEDevice::init("");
     pBLEScan = NimBLEDevice::getScan();
     pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks(), false);
-    pBLEScan->setActiveScan(true);
-    pBLEScan->setInterval(200);
-    pBLEScan->setWindow(150);
+    pBLEScan->setActiveScan(true); pBLEScan->setInterval(200); pBLEScan->setWindow(150);
 
-    // Spawns the background radio task runner on core thread scheduler
     xTaskCreatePinnedToCore(bleWorkerTask, "BLE_Worker", 4096, NULL, 1, NULL, 0);
 }
 
 void loop() {
     server.handleClient();
-    delay(2); // Yields CPU core control smoothly back to the network stack
+    delay(2); 
 }

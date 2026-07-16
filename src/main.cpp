@@ -19,8 +19,9 @@ String targetMACs[NUM_SENSORS] = {"", "", ""};
 String sensorLabels[NUM_SENSORS] = {"Sensor Slot 1", "Sensor Slot 2", "Sensor Slot 3"};
 
 // --- Live Telemetry Buffers ---
-float currentTemp[NUM_SENSORS] = {0.0, 0.0, 0.0}; 
+float currentTemp[NUM_SENSORS] = {0.0, 0.0, 0.0}; // In Fahrenheit
 float currentHumi[NUM_SENSORS] = {0.0, 0.0, 0.0};
+float currentDewPoint[NUM_SENSORS] = {0.0, 0.0, 0.0}; // In Fahrenheit
 bool sensorSeen[NUM_SENSORS] = {false, false, false};
 String discoveredTags = ""; 
 
@@ -30,19 +31,31 @@ struct LogData {
     unsigned long timestamp; 
     float temps[NUM_SENSORS];
     float humis[NUM_SENSORS];
+    float dews[NUM_SENSORS]; 
 };
 LogData dataLog[MAX_POINTS];
 int dataCount = 0;
 
+// Thread Mutex Variables
 SemaphoreHandle_t dataMutex;
 bool userTriggeredScan = false;
 
-// Forward Declarations for Flash Memory Handlers
+// Forward Declarations
 void saveConfigurationToFlash();
 void loadConfigurationFromFlash();
 void commitDataLogToFlash();
 void readDataLogFromFlash();
 
+// --- Built-in Offline Dew Point Calculation Function (Magnus-Tetens Formula) ---
+float calculateDewPointF(float tempF, float rh) {
+    if (rh <= 0.0) return 0.0;
+    float tC = (tempF - 32.0) * 5.0 / 9.0;
+    float a = 17.625;
+    float b = 243.04;
+    float alpha = ((a * tC) / (b + tC)) + log(rh / 100.0);
+    float dewC = (b * alpha) / (a - alpha);
+    return (dewC * 1.8) + 32.0;
+}
 // --- BLE Engine Callback ---
 class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
     void onResult(NimBLEAdvertisedDevice* advertisedDevice) {
@@ -66,6 +79,7 @@ class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
                             if (targetMACs[i].length() > 0 && targetMACs[i] == deviceMac) {
                                 currentTemp[i] = parsedTempF;
                                 currentHumi[i] = parsedHumi;
+                                currentDewPoint[i] = calculateDewPointF(parsedTempF, parsedHumi);
                                 sensorSeen[i] = true;
                             }
                         }
@@ -79,7 +93,8 @@ class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
         }
     }
 };
-// --- Cummins Dark-Themed UI Dashboard ---
+
+// --- Cummins Dark-Themed UI Dashboard Header String ---
 const char htmlDashboardHeader[] PROGMEM = "<!DOCTYPE html><html><head>"
 "<meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>"
 "<style>body{font-family:sans-serif; background:#121212; color:#e0e0e0; padding:15px; text-align:center;}"
@@ -92,9 +107,9 @@ const char htmlDashboardHeader[] PROGMEM = "<!DOCTYPE html><html><head>"
 "input[type=file], input[type=text]{background:#2d2d2d; padding:8px; border-radius:4px; color:#fff; border:1px solid #444; margin:4px 0; width:90%; font-size:13px;}"
 "input[type=button], .btn-action, button{background:#00adb5; color:#fff; border:none; padding:10px 15px; border-radius:4px; cursor:pointer; font-weight:bold; text-decoration:none; display:inline-block; margin:4px; font-size:14px;}"
 ".btn-clear{background:#d9534f;} .btn-scan{background:#f0ad4e; color:#222;} .btn-save{background:#28a745; width:100%; margin-top:10px;} code{background:#000; color:#0f0; padding:2px 6px; border-radius:3px; font-family:monospace; user-select:all; cursor:pointer;}"
-"table{width:100%; border-collapse:collapse; margin-top:10px; font-size:12px; text-align:left;}"
-"th{background:#00adb5; color:#fff; padding:8px;}"
-"td{padding:8px; border-bottom:1px solid #333; font-family:monospace;}"
+"table{width:100%; border-collapse:collapse; margin-top:10px; font-size:11px; text-align:left;}"
+"th{background:#00adb5; color:#fff; padding:6px;}"
+"td{padding:6px; border-bottom:1px solid #333; font-family:monospace;}"
 "tr:nth-child(even){background:#252525;}"
 ".chart-panel{display:flex; height:200px; align-items:flex-end; gap:6px; background:#0a0a0a; border-left:2px solid #555; border-bottom:2px solid #555; padding:15px 10px 5px 10px; margin-top:15px; overflow-x:auto; position:relative;}"
 ".chart-column{display:flex; flex-direction:column; align-items:center; flex-grow:1; min-width:40px; height:100%; justify-content:flex-end;}"
@@ -126,6 +141,7 @@ const char htmlDashboardHeader[] PROGMEM = "<!DOCTYPE html><html><head>"
 "</form></div>";
 
 const char htmlDashboardFooter[] PROGMEM = "<div class='box'><h3>🗄️ Memory Management</h3>"
+"<a href='/download-csv' class='btn-action' style='background:#28a745;'>💾 Download CSV Log</a>"
 "<button onclick='clearLocalMemory()' class='btn-action btn-clear'>🗑️ Wipe Saved Log</button></div>"
 "<div class='box'><h3>Wireless Firmware Management</h3><form id='upload-form' enctype='multipart/form-data'>"
 "<input type='file' id='file-input' name='update' accept='.bin' required> "
@@ -145,11 +161,12 @@ const char htmlDashboardFooter[] PROGMEM = "<div class='box'><h3>🗄️ Memory 
 "    gridHtml += `<div class='sensor-box'><div class='sensor-title'>📌 ${data.sensors[i].label}</div>`+"
 "                `<div class='lbl'>MAC:</div><div class='val' style='font-size:11px; color:#888;'>${displayMac}</div>`+"
 "                `<div class='lbl'>Temperature:</div><div class='val' style='color:#ff4757;'>${data.sensors[i].t.toFixed(1)}°F</div>`+"
-"                `<div class='lbl'>Humidity:</div><div class='val' style='color:#00adb5;'>${data.sensors[i].h.toFixed(1)}%</div></div>`;"
+"                `<div class='lbl'>Humidity:</div><div class='val' style='color:#00adb5;'>${data.sensors[i].h.toFixed(1)}%</div>`+"
+"                `<div class='lbl'>Dew Point:</div><div class='val' style='color:#ffb703;'>${data.sensors[i].d.toFixed(1)}°F</div></div>`;"
 "  }"
 "  document.getElementById('sensor-grid').innerHTML = gridHtml;"
 "  firstLoad = false;"
-" }).catch(err => console.log('Awaiting server sync window...'));"
+" }).catch(err => console.log('Syncing...'));"
 "}"
 "function triggerManualScan() {"
 "  let btn = document.getElementById('scan-btn'); btn.disabled = true; btn.innerText = 'Sniffing BLE frequencies...';"
@@ -165,6 +182,7 @@ const char htmlDashboardFooter[] PROGMEM = "<div class='box'><h3>🗄️ Memory 
 "function uploadFile(){ var fi=document.getElementById('file-input'); if(fi.files.length===0){alert('Select .bin!');return;} var fd=new FormData(); fd.append('update',fi.files); var xhr=new XMLHttpRequest(); xhr.open('POST','/update',true); document.getElementById('prg-wrapper').style.display='block'; document.getElementById('status-msg').innerText='Uploading firmware...';"
 "xhr.upload.addEventListener('progress',function(e){ if(e.lengthComputable){ var p=Math.round((e.loaded/e.total)*100); document.getElementById('prg-bar').style.width=p+'%'; document.getElementById('prg-bar').innerText=p+'%'; } });"
 "xhr.onload=function(){ if(xhr.status===200){ document.getElementById('status-msg').style.color='#00ff00'; document.getElementById('status-msg').innerText='✅ Success! Rebooting...'; setTimeout(function(){ window.location.reload(); }, 5000); }else{ document.getElementById('status-msg').innerText='❌ Failed: '+xhr.responseText; } }; xhr.send(fd); }</script></body></html>";
+
 // --- Endpoint Handlers ---
 void handleRoot() {
     String htmlVisualChart = "<div class='box'><h3>📊 Historical Trend Profile (Slot 1 Tracker)</h3><div class='chart-panel'>";
@@ -175,13 +193,14 @@ void handleRoot() {
             for (int i = 0; i < dataCount; i++) {
                 float tVal = dataLog[i].temps[0];
                 float hVal = dataLog[i].humis[0];
+                float dVal = dataLog[i].dews[0]; 
                 float heightPct = ((tVal - 14.0) / 90.0) * 100.0;
                 if (heightPct > 100.0) heightPct = 100.0;
                 if (heightPct < 5.0) heightPct = 5.0;
 
                 htmlVisualChart += "<div class='chart-column'><div class='chart-pillar' style='height:" + String(heightPct, 0) + "%;'>";
                 htmlVisualChart += "<div class='chart-lbl-t'>" + String(tVal, 0) + "°</div></div>";
-                htmlVisualChart += "<div class='chart-lbl-h'>" + String(hVal, 0) + "%</div>";
+                htmlVisualChart += "<div class='chart-lbl-h' style='color:#ffb703;'> " + String(dVal, 0) + "°Dp</div>"; 
                 htmlVisualChart += "<div class='chart-tick'>" + String(dataLog[i].timestamp) + "m</div></div>";
             }
             xSemaphoreGive(dataMutex);
@@ -200,7 +219,7 @@ void handleRoot() {
             for (int i = dataCount - 1; i >= 0; i--) {
                 htmlLogTable += "<tr><td>" + String(dataLog[i].timestamp) + " mins ago</td>";
                 for(int s=0; s<NUM_SENSORS; s++) {
-                    htmlLogTable += "<td>" + String(dataLog[i].temps[s], 1) + "°F / " + String(dataLog[i].humis[s], 0) + "%</td>";
+                    htmlLogTable += "<td>" + String(dataLog[i].temps[s], 1) + "°F / " + String(dataLog[i].humis[s], 0) + "%<br><span style='color:#ffb703;'>Dp: " + String(dataLog[i].dews[s], 1) + "°F</span></td>";
                 }
                 htmlLogTable += "</tr>";
             }
@@ -211,6 +230,38 @@ void handleRoot() {
 
     String pageResponse = String(htmlDashboardHeader) + htmlVisualChart + htmlLogTable + String(htmlDashboardFooter);
     server.send(200, "text/html; charset=utf-8", pageResponse);
+}
+
+// Stream CSV text on the fly without using memory allocations
+void handleDownloadCSV() {
+    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    server.sendHeader("Content-Type", "text/csv");
+    server.sendHeader("Content-Disposition", "attachment; filename=ruuvi_field_log.csv");
+    server.send(200, "text/csv", "");
+
+    String csvHeader = "Time_Elapsed_Minutes";
+    for(int s=0; s<NUM_SENSORS; s++) {
+        csvHeader += "," + sensorLabels[s] + "_Temp_F";
+        csvHeader += "," + sensorLabels[s] + "_Humidity_Pct";
+        csvHeader += "," + sensorLabels[s] + "_DewPoint_F";
+    }
+    csvHeader += "\n";
+    server.sendContent(csvHeader);
+
+    if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
+        for(int i = 0; i < dataCount; i++) {
+            String line = String(dataLog[i].timestamp);
+            for(int s=0; s<NUM_SENSORS; s++) {
+                line += "," + String(dataLog[i].temps[s], 2);
+                line += "," + String(dataLog[i].humis[s], 2);
+                line += "," + String(dataLog[i].dews[s], 2);
+            }
+            line += "\n";
+            server.sendContent(line);
+        }
+        xSemaphoreGive(dataMutex);
+    }
+    server.sendContent(""); 
 }
 
 void handleScanNow() {
@@ -246,7 +297,8 @@ void handleTelemetryJson() {
             json += "{\"mac\":\"" + (targetMACs[i] == "" ? "None Assigned" : targetMACs[i]) + "\",";
             json += "\"label\":\"" + sensorLabels[i] + "\",";
             json += "\"t\":" + String(currentTemp[i], 2) + ",";
-            json += "\"h\":" + String(currentHumi[i], 2) + "}";
+            json += "\"h\":" + String(currentHumi[i], 2) + ",";
+            json += "\"d\":" + String(currentDewPoint[i], 2) + "}";
             if(i < NUM_SENSORS - 1) json += ",";
         }
         xSemaphoreGive(dataMutex);
@@ -257,7 +309,7 @@ void handleTelemetryJson() {
 void handleClear() {
     if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
         dataCount = 0;
-        for(int i=0; i<NUM_SENSORS; i++) { currentTemp[i] = 0.0; currentHumi[i] = 0.0; sensorSeen[i] = false; }
+        for(int i=0; i<NUM_SENSORS; i++) { currentTemp[i] = 0.0; currentHumi[i] = 0.0; currentDewPoint[i] = 0.0; sensorSeen[i] = false; }
         commitDataLogToFlash(); 
         xSemaphoreGive(dataMutex);
     }
@@ -278,7 +330,6 @@ void handleUpdateUpload() {
     else if (upload.status == UPLOAD_FILE_END) { if (!Update.end(true)) Update.printError(Serial); }
 }
 
-// --- Flash Storage Read/Write Sub-routines ---
 void saveConfigurationToFlash() {
     prefs.begin("ruuvi_cfg", false);
     for(int i=0; i<NUM_SENSORS; i++) {
@@ -298,7 +349,6 @@ void loadConfigurationFromFlash() {
 }
 
 void commitDataLogToFlash() {
-    // FIXED: Split structure elements to avoid partition registry overhead crashes
     prefs.begin("ruuvi_log", false);
     prefs.putInt("count", dataCount);
     for(int i = 0; i < dataCount; i++) {
@@ -307,6 +357,7 @@ void commitDataLogToFlash() {
         for(int s = 0; s < NUM_SENSORS; s++) {
             prefs.putFloat((keyBase + "_t" + String(s)).c_str(), dataLog[i].temps[s]);
             prefs.putFloat((keyBase + "_h" + String(s)).c_str(), dataLog[i].humis[s]);
+            prefs.putFloat((keyBase + "_d" + String(s)).c_str(), dataLog[i].dews[s]);
         }
     }
     prefs.end();
@@ -322,23 +373,21 @@ void readDataLogFromFlash() {
         for(int s = 0; s < NUM_SENSORS; s++) {
             dataLog[i].temps[s] = prefs.getFloat((keyBase + "_t" + String(s)).c_str(), 0.0);
             dataLog[i].humis[s] = prefs.getFloat((keyBase + "_h" + String(s)).c_str(), 0.0);
+            dataLog[i].dews[s] = prefs.getFloat((keyBase + "_d" + String(s)).c_str(), 0.0);
         }
     }
     prefs.end();
 }
 
-// --- Background Core Task Worker (FreeRTOS Engine) ---
 void bleWorkerTask(void *pvParameters) {
     unsigned long localLastLogTime = millis();
     unsigned long localLastLiveTime = millis();
-    
     pBLEScan->start(2, false); pBLEScan->clearResults();
 
     while(1) {
         if (userTriggeredScan) { pBLEScan->start(4, false); pBLEScan->clearResults(); userTriggeredScan = false; }
         if (millis() - localLastLiveTime >= 30000) { pBLEScan->start(2, false); pBLEScan->clearResults(); localLastLiveTime = millis(); }
 
-        // 5-Minute Logging Checkpoint
         if (millis() - localLastLogTime >= 300000) {
             pBLEScan->start(2, false); pBLEScan->clearResults();
 
@@ -347,14 +396,21 @@ void bleWorkerTask(void *pvParameters) {
                 
                 if (dataCount < MAX_POINTS) {
                     dataLog[dataCount].timestamp = 0;
-                    for(int s=0; s<NUM_SENSORS; s++) { dataLog[dataCount].temps[s] = currentTemp[s]; dataLog[dataCount].humis[s] = currentHumi[s]; }
+                    for(int s=0; s<NUM_SENSORS; s++) { 
+                        dataLog[dataCount].temps[s] = currentTemp[s]; 
+                        dataLog[dataCount].humis[s] = currentHumi[s]; 
+                        dataLog[dataCount].dews[s] = currentDewPoint[s];
+                    }
                     dataCount++;
                 } else {
                     for (int i = 1; i < MAX_POINTS; i++) { dataLog[i - 1] = dataLog[i]; }
                     dataLog[MAX_POINTS - 1].timestamp = 0;
-                    for(int s=0; s<NUM_SENSORS; s++) { dataLog[MAX_POINTS - 1].temps[s] = currentTemp[s]; dataLog[MAX_POINTS - 1].humis[s] = currentHumi[s]; }
+                    for(int s=0; s<NUM_SENSORS; s++) { 
+                        dataLog[MAX_POINTS - 1].temps[s] = currentTemp[s]; 
+                        dataLog[MAX_POINTS - 1].humis[s] = currentHumi[s]; 
+                        dataLog[MAX_POINTS - 1].dews[s] = currentDewPoint[s];
+                    }
                 }
-                
                 commitDataLogToFlash();
                 xSemaphoreGive(dataMutex);
             }
@@ -367,7 +423,6 @@ void bleWorkerTask(void *pvParameters) {
 void setup() {
     Serial.begin(115200);
     delay(1000);
-    
     dataMutex = xSemaphoreCreateMutex();
     
     loadConfigurationFromFlash();
@@ -378,6 +433,7 @@ void setup() {
     server.on("/", HTTP_GET, handleRoot);
     server.on("/scan-now", HTTP_POST, handleScanNow);
     server.on("/save-config", HTTP_POST, handleSaveConfig);
+    server.on("/download-csv", HTTP_GET, handleDownloadCSV); // FIXED: Linked CSV handler route
     server.on("/telemetry-json", HTTP_GET, handleTelemetryJson);
     server.on("/clear", HTTP_POST, handleClear);
     server.on("/update", HTTP_POST, handleUpdateResponse, handleUpdateUpload);

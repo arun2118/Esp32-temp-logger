@@ -1,6 +1,6 @@
 # 📊 RuuviTag Offline Field Multi-Logger & Dashboard
 
-A robust, production-ready data logging firmware that captures telemetry from up to three **RuuviTag BLE Sensors** simultaneously. Designed specifically for off-the-grid field applications, this system operates entirely **without internet access or cellular data**, serving an interactive dark-themed dashboard over a local Wi-Fi Access Point (AP).
+A robust, production-ready data logging firmware that captures telemetry from **RuuviTag BLE Sensors** simultaneously. Designed specifically for off-the-grid field applications, this system operates entirely **without internet access or cellular data**, serving an interactive dark-themed dashboard over a local Wi-Fi Access Point (AP).
 
 ---
 
